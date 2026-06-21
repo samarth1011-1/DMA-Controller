@@ -4,7 +4,7 @@ set rtl_files [glob -nocomplain rtl/*.v]
 
 set tb_files [glob -nocomplain tb/*.v]
 
-# for any specific file change tb/*.v to tb/<file_name>.v
+# for any specific file, change tb/*.v to tb/<file_name>.v
 
 set all_files [concat $rtl_files $tb_files]
 
