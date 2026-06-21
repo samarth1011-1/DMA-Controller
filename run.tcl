@@ -10,7 +10,7 @@ set all_files [concat $rtl_files $tb_files]
 
 eval exec iverilog -o output $all_files
 
-set sim_out [eval vvp output]
+set sim_out [exec vvp output]
 
 puts $sim_out
 
