@@ -10,7 +10,7 @@ module fifo #(
     output reg [DATA_WIDTH-1:0] rd_data,
     output reg full,
     output reg empty,
-    output reg [$clog2(DEPTH+1)-1:0]  count
+    output [$clog2(DEPTH+1)-1:0]  count
 );
     localparam PTR_W = $clog2(DEPTH);
 
