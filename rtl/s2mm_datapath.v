@@ -1,79 +1,41 @@
 module s2mm_datapath #(
-    parameter DATA_WIDTH = 32,
-    parameter FIFO_DEPTH = 16
+    parameter DATA_WIDTH = 32
 )(
-    input  wire                   clk,
-    input  wire                   rst_n,
+    input clk,
+    input rst_n,
 
-    // AXI-Stream
-    input  wire [DATA_WIDTH-1:0]  s_axis_tdata,
-    input  wire                   s_axis_tvalid,
-    output reg                    s_axis_tready,
-    input  wire                   s_axis_tlast,
+    // AXI-Stream slave
+    input [DATA_WIDTH-1:0] s_axis_tdata,
+    input s_axis_tvalid,
+    output reg s_axis_tready,
+    input s_axis_tlast,    // ts not used anywhere
 
-    // FIFO interface
-    output reg  [DATA_WIDTH-1:0]  fifo_rdata,
-    input  wire                   fifo_rd_en,
-    output reg                    fifo_empty,
-    output reg  [4:0]             fifo_count
+    // FIFO write interface
+    output reg fifo_wr_en,
+    output reg [DATA_WIDTH-1:0] fifo_wr_data,
+    input fifo_full
 );
 
-    reg [DATA_WIDTH-1:0] mem [0:FIFO_DEPTH-1];
+/*
+a transfer happens only when data is available and the FIFO is not full
+so we use !fifo_full directly instead of delayed ready signal which avoids 
+1-cycle delay and prevents wrong transfers
+*/
 
-    reg [4:0] wr_ptr, rd_ptr;
-    reg [4:0] count;
-
-    wire write_en = s_axis_tvalid && s_axis_tready;
-    wire read_en  = fifo_rd_en && (count > 0);
-
-    // =========================================================
-    // SINGLE FIFO CONTROL BLOCK (FIX)
-    // =========================================================
-    always @(posedge clk) begin
-        if (!rst_n) begin
-            wr_ptr <= 0;
-            rd_ptr <= 0;
-            count  <= 0;
-
-            fifo_rdata <= 0;
-        end else begin
-
-            // WRITE
-            if (write_en) begin
-                mem[wr_ptr] <= s_axis_tdata;
-                wr_ptr <= wr_ptr + 1;
-            end
-
-            // READ
-            if (read_en) begin
-                fifo_rdata <= mem[rd_ptr];
-                rd_ptr <= rd_ptr + 1;
-            end
-
-            // COUNT UPDATE (correct handling)
-            case ({write_en, read_en})
-                2'b10: count <= count + 1; // write only
-                2'b01: count <= count - 1; // read only
-                2'b11: count <= count;     // simultaneous → no change
-                default: ;
-            endcase
-        end
+wire axis_handshake = s_axis_tvalid && !fifo_full;
+always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) begin
+        s_axis_tready <= 1'b0;
+        fifo_wr_en <= 1'b0;
+        fifo_wr_data <= {DATA_WIDTH{1'b0}};
+    end else begin
+            // tready: tell upstream whether we can accept next cycle
+        s_axis_tready <= !fifo_full;
+            // wr_en: mirrors the handshake — high for exactly one cycle
+        fifo_wr_en <= axis_handshake;
+            // wr_data: captured only when a handshake actually occurs
+        if(axis_handshake) fifo_wr_data <= s_axis_tdata;
     end
-
-    // =========================================================
-    // STATUS
-    // =========================================================
-    always @(posedge clk) begin
-        if (!rst_n) begin
-            fifo_empty   <= 1;
-            fifo_count   <= 0;
-            s_axis_tready <= 1;
-        end else begin
-            fifo_empty   <= (count == 0);
-            fifo_count   <= count;
-
-            s_axis_tready <= (count < FIFO_DEPTH);
-        end
     end
 
 endmodule
