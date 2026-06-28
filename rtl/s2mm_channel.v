@@ -47,7 +47,7 @@ wire [4:0] fifo_count; // 5-bit wide as it counts upto 31 bits
 
 // s2mm_datapath 
 s2mm_datapath #(
-    .DATA_WIDTH(DATA_WIDTH),
+    .DATA_WIDTH(DATA_WIDTH)
 ) u_datapath (
     .clk(clk),
     .rst_n(rst_n),
