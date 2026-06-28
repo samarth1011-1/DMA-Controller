@@ -54,19 +54,25 @@ module s2mm_control_fsm #(
     reg start_d;
     wire start_edge = s2mm_ctrl[0] & ~start_d;
 
-    always @(posedge clk)
-        start_d <= s2mm_ctrl[0];
+    always @(posedge clk) begin
+        if (!rst_n)
+            start_d <= 1'b0;
+        else
+            start_d <= s2mm_ctrl[0];
+    end
 
     // =========================================================
     // FSM states
     // =========================================================
     localparam [2:0]
-        IDLE       = 3'd0,
-        WAIT_DATA  = 3'd1,
-        WRITE_ADDR = 3'd2,
-        WRITE_DATA = 3'd3,
-        WRITE_RESP = 3'd4,
-        DONE       = 3'd5;
+        IDLE         = 3'd0,
+        WAIT_DATA    = 3'd1,
+        WRITE_ADDR   = 3'd2,
+        READ_FIFO    = 3'd3,
+        CAPTURE_DATA = 3'd4,
+        WRITE_DATA   = 3'd5,
+        WRITE_RESP   = 3'd6,
+        DONE         = 3'd7;
 
     reg [2:0] state;
 
@@ -159,43 +165,48 @@ module s2mm_control_fsm #(
                     m_axi_awvalid <= 0;
                     beat_count <= 0;
                     data_valid <= 0;
-                    state <= WRITE_DATA;
+                    state <= READ_FIFO;
                 end
             end
 
             // =================================================
-            WRITE_DATA: begin
-                // request next FIFO word
-                if (!data_valid && !fifo_empty) begin
+            READ_FIFO: begin
+                m_axi_wvalid <= 0;
+                m_axi_wlast  <= 0;
+
+                if (!fifo_empty) begin
                     fifo_rd_en <= 1;
-                    data_valid <= 1;
+                    state <= CAPTURE_DATA;
                 end
+            end
 
-                // capture FIFO output
-                if (fifo_rd_en)
-                    data_reg <= fifo_rdata;
+            // =================================================
+            CAPTURE_DATA: begin
+                data_reg     <= fifo_rdata;
+                m_axi_wdata  <= fifo_rdata;
+                m_axi_wvalid <= 1;
+                m_axi_wlast  <= (beat_count == burst_beats - 1);
+                data_valid   <= 1;
+                state <= WRITE_DATA;
+            end
 
-                if (data_valid) begin
-                    m_axi_wvalid <= 1;
-                    m_axi_wdata  <= data_reg;
-                    m_axi_wlast  <= (beat_count == burst_beats - 1);
-
-                    if (m_axi_wvalid && m_axi_wready) begin
-                        data_valid <= 0;
-
-                        beat_count <= beat_count + 1;
-                        bytes_remaining <= bytes_remaining - 4;
-                        addr <= addr + 4;
-
-                        if (beat_count == burst_beats - 1) begin
-                            m_axi_wvalid <= 0;
-                            m_axi_wlast  <= 0;
-                            state <= WRITE_RESP;
-                        end
-                    end
-                end
-                else begin
+            // =================================================
+            WRITE_DATA: begin
+                if (m_axi_wvalid && m_axi_wready) begin
+                    data_valid <= 0;
                     m_axi_wvalid <= 0;
+
+                    beat_count <= beat_count + 1;
+                    bytes_remaining <= bytes_remaining - 4;
+                    addr <= addr + 4;
+
+                    if (beat_count == burst_beats - 1) begin
+                        m_axi_wlast <= 0;
+                        state <= WRITE_RESP;
+                    end
+                    else begin
+                        state <= READ_FIFO;
+                    end
                 end
             end
 
