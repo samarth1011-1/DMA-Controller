@@ -270,7 +270,8 @@ initial begin
 
     $finish;
 end
-
+    end
+end
 // ── Waveform dump ──────────────────────────────────────────────────────────
 initial begin
     $dumpfile("tb_axi4_lite_slave.vcd");

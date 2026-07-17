@@ -64,17 +64,18 @@ module s2mm_control_fsm #(
     // =========================================================
     // FSM states
     // =========================================================
-    localparam [2:0]
-        IDLE         = 3'd0,
-        WAIT_DATA    = 3'd1,
-        WRITE_ADDR   = 3'd2,
-        READ_FIFO    = 3'd3,
-        CAPTURE_DATA = 3'd4,
-        WRITE_DATA   = 3'd5,
-        WRITE_RESP   = 3'd6,
-        DONE         = 3'd7;
+    localparam [3:0]
+        IDLE         = 4'd0,
+        WAIT_DATA    = 4'd1,
+        WRITE_ADDR   = 4'd2,
+        READ_FIFO    = 4'd3,
+        WAIT_FIFO    = 4'd4,
+        CAPTURE_DATA = 4'd5,
+        WRITE_DATA   = 4'd6,
+        WRITE_RESP   = 4'd7,
+        DONE         = 4'd8;
 
-    reg [2:0] state;
+    reg [3:0] state;
 
     // =========================================================
     // Registers
@@ -176,8 +177,13 @@ module s2mm_control_fsm #(
 
                 if (!fifo_empty) begin
                     fifo_rd_en <= 1;
-                    state <= CAPTURE_DATA;
+                    state <= WAIT_FIFO;
                 end
+            end
+
+            // =================================================
+            WAIT_FIFO: begin
+                state <= CAPTURE_DATA;
             end
 
             // =================================================
