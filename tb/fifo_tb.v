@@ -144,7 +144,7 @@ initial begin
     wr_en <= 0;
     rd_en <= 0;
     #1;$display("Count = %0d", count);
-    #20;$display("\n TEST COMPLETE : ");
+    #100;$display("\n TEST COMPLETE : ");
     $finish;
 end
 endmodule

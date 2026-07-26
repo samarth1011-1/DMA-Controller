@@ -1,19 +1,27 @@
+`timescale 1ns/1ps
+
 module barrel_shifter #(
-    parameter DATA_WIDTH = 4,                    
-    parameter SHIFT_BITS = 2                     
+    parameter DATA_WIDTH = 64,
+    parameter SHIFT_BITS = $clog2(DATA_WIDTH)
 )(
-    input  wire [DATA_WIDTH-1:0]  data_address,
-    input  wire [SHIFT_BITS-1:0]  shift_amount,
-    output wire [DATA_WIDTH-1:0]  out_shifted_address
+    input  wire [DATA_WIDTH-1:0] data_address,
+    input  wire [SHIFT_BITS-1:0] shift_amount,
+    output wire [DATA_WIDTH-1:0] out_shifted_address
 );
-    wire [DATA_WIDTH-1:0] stage_wire [0:SHIFT_BITS];
-    assign stage_wire[0] = data_address;
+
+    wire [DATA_WIDTH-1:0] stage [0:SHIFT_BITS];
+    assign stage[0] = data_address;
+
     genvar i;
     generate
-        for (i = 0; i < SHIFT_BITS; i = i + 1) begin : shift_stage
-        localparam SHIF = 1 << i;
-            assign stage_wire[i+1] = shift_amount[i]? (stage_wire[i] >> SHIF): stage_wire[i];
+        for (i = 0; i < SHIFT_BITS; i = i + 1) begin : g_shift
+            localparam integer DISTANCE = (1 << i);
+            assign stage[i+1] = shift_amount[i]
+                              ? (stage[i] >> DISTANCE)
+                              : stage[i];
         end
     endgenerate
-    assign out_shifted_address = stage_wire[SHIFT_BITS];
+
+    assign out_shifted_address = stage[SHIFT_BITS];
+
 endmodule

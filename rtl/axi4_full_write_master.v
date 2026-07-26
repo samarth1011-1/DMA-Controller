@@ -1,3 +1,5 @@
+`timescale 1ns/1ps
+
 module axi4_full_write_master #(
     parameter DATA_WIDTH = 32,
     parameter ADDR_WIDTH = 32
