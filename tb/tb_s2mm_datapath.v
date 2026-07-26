@@ -2,145 +2,273 @@
 
 module tb_s2mm_datapath;
 
-    parameter DATA_WIDTH = 32;
-    parameter FIFO_DEPTH = 16;
+    reg         clk;
+    reg         rst_n;
+    reg         start;
+    reg  [1:0]  dst_offset;
+    reg  [31:0] transfer_len;
+    reg  [31:0] s_axis_tdata;
+    reg         s_axis_tvalid;
+    reg         s_axis_tlast;
+    wire        s_axis_tready;
+    wire [31:0] data;
+    wire [3:0]  data_strb;
+    wire        data_valid;
+    reg         data_ready;
+    wire        active;
+    wire        done;
+    wire        error;
 
-    reg clk, rst_n;
+    reg [7:0] write_image [0:63];
+    integer beat_count;
+    integer fail_count;
+    integer pass_count;
+    integer lane;
+    integer i;
+    reg done_seen;
 
-    // AXI-Stream
-    reg  [DATA_WIDTH-1:0] s_axis_tdata;
-    reg                   s_axis_tvalid;
-    wire                  s_axis_tready;
-    reg                   s_axis_tlast;
-
-    // FIFO side
-    wire [DATA_WIDTH-1:0] fifo_rdata;
-    reg                   fifo_rd_en;
-    wire                  fifo_empty;
-    wire [4:0]            fifo_count;
-
-    // DUT
-    s2mm_datapath #(
-        .DATA_WIDTH(DATA_WIDTH),
-        .FIFO_DEPTH(FIFO_DEPTH)
-    ) dut (
+    s2mm_datapath dut (
         .clk(clk),
         .rst_n(rst_n),
-
+        .start(start),
+        .dst_offset(dst_offset),
+        .transfer_len(transfer_len),
         .s_axis_tdata(s_axis_tdata),
         .s_axis_tvalid(s_axis_tvalid),
-        .s_axis_tready(s_axis_tready),
         .s_axis_tlast(s_axis_tlast),
-
-        .fifo_rdata(fifo_rdata),
-        .fifo_rd_en(fifo_rd_en),
-        .fifo_empty(fifo_empty),
-        .fifo_count(fifo_count)
+        .s_axis_tready(s_axis_tready),
+        .data(data),
+        .data_strb(data_strb),
+        .data_valid(data_valid),
+        .data_ready(data_ready),
+        .active(active),
+        .done(done),
+        .error(error)
     );
 
-    // Clock
-    initial clk = 0;
+    initial clk = 1'b0;
     always #5 clk = ~clk;
 
-    // =========================================================
-    // TASK: send stream data
-    // =========================================================
-    task send_stream;
-        input integer n;
-        input [31:0] base;
-        integer i;
-        begin
-            for (i = 0; i < n; i = i + 1) begin
-                @(posedge clk);
-                s_axis_tvalid <= 1;
-                s_axis_tdata  <= base + i;
-                s_axis_tlast  <= (i == n-1);
-
-                // wait until accepted
-                while (!s_axis_tready)
-                    @(posedge clk);
+    always @(posedge clk) begin
+        if (!rst_n) begin
+            beat_count <= 0;
+            done_seen  <= 1'b0;
+        end else begin
+            if (data_valid && data_ready) begin
+                for (lane = 0; lane < 4; lane = lane + 1)
+                    if (data_strb[lane])
+                        write_image[beat_count*4 + lane]
+                            <= data[lane*8 +: 8];
+                beat_count <= beat_count + 1;
             end
 
+            if (done)
+                done_seen <= 1'b1;
+        end
+    end
+
+    task reset_dut;
+        begin
+            rst_n         = 1'b0;
+            start         = 1'b0;
+            dst_offset    = 2'd0;
+            transfer_len  = 32'd0;
+            s_axis_tdata  = 32'd0;
+            s_axis_tvalid = 1'b0;
+            s_axis_tlast  = 1'b0;
+            data_ready    = 1'b1;
+            repeat (4) @(posedge clk);
+            rst_n = 1'b1;
+            repeat (2) @(posedge clk);
+        end
+    endtask
+
+    task pulse_start;
+        input [1:0]  offset;
+        input [31:0] length;
+        begin
+            @(negedge clk);
+            dst_offset   = offset;
+            transfer_len = length;
+            start        = 1'b1;
+            @(negedge clk);
+            start = 1'b0;
+        end
+    endtask
+
+    task send_word;
+        input [31:0] word_data;
+        input        word_last;
+        begin
+            @(negedge clk);
+            s_axis_tdata  = word_data;
+            s_axis_tvalid = 1'b1;
+            s_axis_tlast  = word_last;
             @(posedge clk);
-            s_axis_tvalid <= 0;
-            s_axis_tlast  <= 0;
+            while (!s_axis_tready)
+                @(posedge clk);
+            @(negedge clk);
+            s_axis_tvalid = 1'b0;
+            s_axis_tlast  = 1'b0;
         end
     endtask
 
-    // =========================================================
-    // TASK: read FIFO data
-    // =========================================================
-    task read_fifo;
-        input integer n;
-        integer i;
+    task wait_for_done;
+        integer cycles;
         begin
-            for (i = 0; i < n; i = i + 1) begin
+            cycles = 0;
+            while (!done_seen && cycles < 100) begin
                 @(posedge clk);
-                fifo_rd_en <= 1;
-                @(posedge clk);
-                fifo_rd_en <= 0;
-
-                $display("[%0t] READ: %h (count=%0d)",
-                          $time, fifo_rdata, fifo_count);
+                cycles = cycles + 1;
             end
         end
     endtask
 
-    // =========================================================
-    // TEST
-    // =========================================================
+    task run_case;
+        input integer case_offset;
+        input integer case_length;
+        input         insert_backpressure;
+        integer word_index;
+        integer byte_index;
+        integer input_words;
+        integer expected_beats;
+        integer case_errors;
+        reg [31:0] packed_word;
+        begin
+            reset_dut();
+            for (i = 0; i < 64; i = i + 1)
+                write_image[i] = 8'hEE;
+
+            pulse_start(case_offset[1:0], case_length);
+
+            if (insert_backpressure) begin
+                data_ready = 1'b0;
+                repeat (3) @(posedge clk);
+                if (s_axis_tready !== 1'b0) begin
+                    $display(
+                        "FAIL: TREADY ignored downstream backpressure"
+                    );
+                    fail_count = fail_count + 1;
+                end
+                data_ready = 1'b1;
+            end
+
+            input_words = (case_length + 3) / 4;
+            for (word_index = 0; word_index < input_words;
+                 word_index = word_index + 1) begin
+                packed_word = 32'd0;
+                for (byte_index = 0; byte_index < 4;
+                     byte_index = byte_index + 1)
+                    if ((word_index*4 + byte_index) < case_length)
+                        packed_word[byte_index*8 +: 8] =
+                            8'h20 + word_index*4 + byte_index;
+
+                send_word(
+                    packed_word,
+                    word_index == input_words - 1
+                );
+            end
+
+            wait_for_done();
+            case_errors = 0;
+            expected_beats = (case_offset + case_length + 3) / 4;
+
+            if (!done_seen || active || error) begin
+                $display(
+                    "FAIL: completion offset=%0d length=%0d done=%0d active=%0d error=%0d",
+                    case_offset, case_length, done_seen, active, error
+                );
+                case_errors = case_errors + 1;
+            end
+
+            if (beat_count != expected_beats) begin
+                $display(
+                    "FAIL: beat count offset=%0d length=%0d got=%0d expected=%0d",
+                    case_offset, case_length, beat_count, expected_beats
+                );
+                case_errors = case_errors + 1;
+            end
+
+            for (i = 0; i < 64; i = i + 1) begin
+                if (i >= case_offset &&
+                    i < case_offset + case_length) begin
+                    if (write_image[i] !==
+                        ((8'h20 + i - case_offset) & 8'hFF)) begin
+                        $display(
+                            "FAIL: data offset=%0d length=%0d byte=%0d got=%02h",
+                            case_offset, case_length, i, write_image[i]
+                        );
+                        case_errors = case_errors + 1;
+                    end
+                end else if (write_image[i] !== 8'hEE) begin
+                    $display(
+                        "FAIL: strobe offset=%0d length=%0d byte=%0d",
+                        case_offset, case_length, i
+                    );
+                    case_errors = case_errors + 1;
+                end
+            end
+
+            if (case_errors == 0) begin
+                $display(
+                    "PASS: S2MM datapath offset=%0d length=%0d",
+                    case_offset, case_length
+                );
+                pass_count = pass_count + 1;
+            end else begin
+                fail_count = fail_count + case_errors;
+            end
+        end
+    endtask
+
+    task run_tlast_error_case;
+        begin
+            reset_dut();
+            pulse_start(2'd0, 32'd8);
+            send_word(32'h4433_2211, 1'b1);
+            send_word(32'h8877_6655, 1'b1);
+            wait_for_done();
+
+            if (done_seen && error) begin
+                $display("PASS: early TLAST detected");
+                pass_count = pass_count + 1;
+            end else begin
+                $display(
+                    "FAIL: early TLAST not detected done=%0d error=%0d",
+                    done_seen, error
+                );
+                fail_count = fail_count + 1;
+            end
+        end
+    endtask
+
     initial begin
-        $dumpfile("wave.vcd");
-        $dumpvars(0, tb_s2mm_datapath);
+        fail_count = 0;
+        pass_count = 0;
 
-        // init
-        rst_n = 0;
-        s_axis_tvalid = 0;
-        s_axis_tdata  = 0;
-        s_axis_tlast  = 0;
-        fifo_rd_en    = 0;
+        run_case(0, 16, 1'b0);
+        run_case(1, 1,  1'b0);
+        run_case(2, 7,  1'b0);
+        run_case(3, 17, 1'b0);
+        run_case(3, 5,  1'b1);
+        run_tlast_error_case();
 
-        #20;
-        rst_n = 1;
+        if (fail_count == 0)
+            $display(
+                "PASS: tb_s2mm_datapath (%0d cases)",
+                pass_count
+            );
+        else
+            $display(
+                "FAIL: tb_s2mm_datapath errors=%0d",
+                fail_count
+            );
+        $finish;
+    end
 
-        // -----------------------------------------------------
-        // TEST 1: Basic write/read
-        // -----------------------------------------------------
-        $display("\n=== TEST1: Write 8 words ===");
-        send_stream(8, 32'hA0000000);
-
-        #20;
-
-        $display("\n=== Reading FIFO ===");
-        read_fifo(8);
-
-        // -----------------------------------------------------
-        // TEST 2: Overflow behavior (TREADY drop)
-        // -----------------------------------------------------
-        $display("\n=== TEST2: Fill FIFO completely ===");
-        send_stream(16, 32'hB0000000);
-
-        #10;
-        $display("FIFO COUNT = %0d (should be 16)", fifo_count);
-
-        // Try sending more (should stall)
-        fork
-            send_stream(4, 32'hC0000000);
-        join
-
-        #50;
-        $display("TREADY = %b (should be 0 when full)", s_axis_tready);
-
-        // -----------------------------------------------------
-        // TEST 3: Drain and resume
-        // -----------------------------------------------------
-        $display("\n=== TEST3: Drain FIFO ===");
-        read_fifo(16);
-
-        #20;
-        $display("FIFO EMPTY = %b (should be 1)", fifo_empty);
-
-        #50;
+    initial begin
+        #50000;
+        $display("FAIL: tb_s2mm_datapath watchdog timeout");
         $finish;
     end
 

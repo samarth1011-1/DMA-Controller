@@ -2,385 +2,272 @@
 
 module tb_s2mm_control_fsm;
 
-    parameter DATA_WIDTH = 32;
-    parameter ADDR_WIDTH = 32;
-    parameter BURST_MAX  = 8;
-    parameter CLK_PERIOD = 10;
+    localparam ADDR_WIDTH = 32;
+    localparam BURST_MAX  = 8;
 
-    reg clk, rst_n;
-
-    // DUT inputs
-    reg  [31:0]           s2mm_ctrl;
+    reg                  clk;
+    reg                  rst_n;
+    reg  [31:0]          s2mm_ctrl;
     reg  [ADDR_WIDTH-1:0] dst_addr;
-    reg  [31:0]           s2mm_len;
+    reg  [31:0]          s2mm_len;
+    wire                 cmd_valid;
+    reg                  cmd_ready;
+    wire [ADDR_WIDTH-1:0] cmd_addr;
+    wire [7:0]           cmd_len;
+    reg                  write_done;
+    reg                  write_error;
+    wire                 align_start;
+    wire [1:0]           align_offset;
+    wire [31:0]          align_length;
+    reg                  align_error;
+    wire [31:0]          s2mm_status;
+    wire                 s2mm_done;
 
-    reg                   fifo_empty;
-    reg  [4:0]            fifo_count;
-    reg  [DATA_WIDTH-1:0] fifo_rdata;
-    wire                  fifo_rd_en;
+    integer cmd_count;
+    integer align_count;
+    integer fail_count;
+    integer pass_count;
+    integer cycles;
+    reg [ADDR_WIDTH-1:0] captured_addr [0:7];
+    reg [7:0]            captured_len  [0:7];
+    reg [1:0]            captured_offset;
+    reg [31:0]           captured_length;
+    reg                  done_seen;
+    reg [31:0]           done_status;
 
-    reg                   m_axi_awready;
-    wire                  m_axi_awvalid;
-    wire [ADDR_WIDTH-1:0] m_axi_awaddr;
-    wire [7:0]            m_axi_awlen;
-    wire [2:0]            m_axi_awsize;
-    wire [1:0]            m_axi_awburst;
-
-    reg                   m_axi_wready;
-    wire                  m_axi_wvalid;
-    wire [DATA_WIDTH-1:0] m_axi_wdata;
-    wire [3:0]            m_axi_wstrb;
-    wire                  m_axi_wlast;
-
-    reg                   m_axi_bvalid;
-    reg  [1:0]            m_axi_bresp;
-    wire                  m_axi_bready;
-
-    wire [31:0]           s2mm_status;
-    wire                  s2mm_done;
-
-    // ---------------------------------------------------------
-    // DUT
-    // ---------------------------------------------------------
-    s2mm_control_fsm dut (
+    s2mm_control_fsm #(
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .BURST_MAX(BURST_MAX)
+    ) dut (
         .clk(clk),
         .rst_n(rst_n),
-
         .s2mm_ctrl(s2mm_ctrl),
         .dst_addr(dst_addr),
         .s2mm_len(s2mm_len),
-
-        .fifo_empty(fifo_empty),
-        .fifo_count(fifo_count),
-        .fifo_rdata(fifo_rdata),
-        .fifo_rd_en(fifo_rd_en),
-
-        .m_axi_awready(m_axi_awready),
-        .m_axi_awvalid(m_axi_awvalid),
-        .m_axi_awaddr(m_axi_awaddr),
-        .m_axi_awlen(m_axi_awlen),
-        .m_axi_awsize(m_axi_awsize),
-        .m_axi_awburst(m_axi_awburst),
-
-        .m_axi_wready(m_axi_wready),
-        .m_axi_wvalid(m_axi_wvalid),
-        .m_axi_wdata(m_axi_wdata),
-        .m_axi_wstrb(m_axi_wstrb),
-        .m_axi_wlast(m_axi_wlast),
-
-        .m_axi_bvalid(m_axi_bvalid),
-        .m_axi_bresp(m_axi_bresp),
-        .m_axi_bready(m_axi_bready),
-
+        .cmd_valid(cmd_valid),
+        .cmd_ready(cmd_ready),
+        .cmd_addr(cmd_addr),
+        .cmd_len(cmd_len),
+        .write_done(write_done),
+        .write_error(write_error),
+        .align_start(align_start),
+        .align_offset(align_offset),
+        .align_length(align_length),
+        .align_error(align_error),
         .s2mm_status(s2mm_status),
         .s2mm_done(s2mm_done)
     );
 
-    // ---------------------------------------------------------
-    // Clock
-    // ---------------------------------------------------------
     initial clk = 1'b0;
-    always #(CLK_PERIOD/2) clk = ~clk;
-
-    // ---------------------------------------------------------
-    // Simple FIFO model with 1-cycle read timing
-    // ---------------------------------------------------------
-    reg [31:0] mem [0:63];
-    integer rd_ptr;
-    integer fill;
-    reg [1:0] tb_bresp;
-    reg b_pending;
+    always #5 clk = ~clk;
 
     always @(posedge clk) begin
         if (!rst_n) begin
-            m_axi_bvalid <= 1'b0;
-            m_axi_bresp  <= 2'b00;
-            b_pending    <= 1'b0;
+            cmd_count       <= 0;
+            align_count     <= 0;
+            done_seen       <= 1'b0;
+            done_status     <= 32'd0;
+            captured_offset <= 2'd0;
+            captured_length <= 32'd0;
         end else begin
-            // generate BVALID one cycle after WLAST handshake
-            if (m_axi_wvalid && m_axi_wready && m_axi_wlast)
-                b_pending <= 1'b1;
-
-            if (b_pending && !m_axi_bvalid) begin
-                m_axi_bvalid <= 1'b1;
-                m_axi_bresp  <= tb_bresp;
-                b_pending    <= 1'b0;
+            if (cmd_valid && cmd_ready) begin
+                captured_addr[cmd_count] <= cmd_addr;
+                captured_len[cmd_count]  <= cmd_len;
+                cmd_count <= cmd_count + 1;
             end
 
-            if (m_axi_bvalid && m_axi_bready)
-                m_axi_bvalid <= 1'b0;
-        end
-    end
-
-    // FIFO read side: advance after the DUT has sampled the current word
-    always @(posedge clk) begin
-        if (rst_n && fifo_rd_en && fill > 0) begin
-            #1 begin
-                rd_ptr = rd_ptr + 1;
-                fill   = fill - 1;
-
-                fifo_count = fill[4:0];
-                fifo_empty = (fill == 0);
-
-                if (fill > 0)
-                    fifo_rdata = mem[rd_ptr];
-                else
-                    fifo_rdata = 32'h0000_0000;
-            end
-        end
-    end
-
-    // ---------------------------------------------------------
-    // Capture / trace
-    // ---------------------------------------------------------
-    integer aw_seen;
-    reg [ADDR_WIDTH-1:0] cap_awaddr [0:7];
-    reg [7:0]            cap_awlen  [0:7];
-
-    reg done_seen;
-    reg [31:0] done_status;
-    reg timed_out;
-
-    always @(posedge clk) begin
-        if (rst_n) begin
-            if (m_axi_awvalid && m_axi_awready) begin
-                #1 begin
-                    cap_awaddr[aw_seen] = m_axi_awaddr;
-                    cap_awlen[aw_seen]   = m_axi_awlen;
-                    $display("[%0t] AW  handshake %0d: AWADDR=%h AWLEN=%0d",
-                             $time, aw_seen, m_axi_awaddr, m_axi_awlen);
-                    aw_seen = aw_seen + 1;
-                end
-            end
-
-            if (m_axi_wvalid && m_axi_wready) begin
-                #1 $display("[%0t] W   handshake: WDATA=%h WLAST=%b",
-                            $time, m_axi_wdata, m_axi_wlast);
-            end
-
-            if (m_axi_bvalid && m_axi_bready) begin
-                #1 $display("[%0t] B   handshake: BRESP=%b",
-                            $time, m_axi_bresp);
+            if (align_start) begin
+                captured_offset <= align_offset;
+                captured_length <= align_length;
+                align_count <= align_count + 1;
             end
 
             if (s2mm_done) begin
-                #1 begin
-                    done_seen   = 1'b1;
-                    done_status = s2mm_status;
-                    $display("[%0t] DONE: STATUS=%h", $time, s2mm_status);
-                end
+                done_seen   <= 1'b1;
+                done_status <= s2mm_status;
             end
         end
     end
 
-    // ---------------------------------------------------------
-    // Tasks
-    // ---------------------------------------------------------
-    task clear_captures;
-        begin
-            aw_seen     = 0;
-            done_seen   = 0;
-            done_status = 0;
-            timed_out   = 0;
-        end
-    endtask
-
     task reset_dut;
         begin
-            rst_n        = 0;
-            s2mm_ctrl    = 0;
-            dst_addr     = 0;
-            s2mm_len     = 0;
-
-            fifo_empty   = 1;
-            fifo_count   = 0;
-            fifo_rdata   = 0;
-
-            m_axi_awready = 0;
-            m_axi_wready  = 0;
-            m_axi_bvalid  = 0;
-            m_axi_bresp   = 0;
-            tb_bresp      = 2'b00;
-            b_pending     = 0;
-
-            rd_ptr        = 0;
-            fill          = 0;
-
-            clear_captures();
-
-            repeat (3) @(posedge clk);
-
-            rst_n = 1;
-            m_axi_awready = 1;
-            m_axi_wready  = 1;
-
-            @(posedge clk);
-        end
-    endtask
-
-    task load_fifo;
-        input integer n;
-        input [31:0] base;
-        integer i;
-        begin
-            rd_ptr = 0;
-            fill   = n;
-
-            for (i = 0; i < n; i = i + 1)
-                mem[i] = base + i;
-
-            if (n > 0)
-                fifo_rdata = mem[0];
-            else
-                fifo_rdata = 32'h0000_0000;
-
-            fifo_count = n[4:0];
-            fifo_empty  = (n == 0);
+            rst_n       = 1'b0;
+            s2mm_ctrl   = 32'd0;
+            dst_addr    = 32'd0;
+            s2mm_len    = 32'd0;
+            cmd_ready   = 1'b1;
+            write_done  = 1'b0;
+            write_error = 1'b0;
+            align_error = 1'b0;
+            repeat (4) @(posedge clk);
+            rst_n = 1'b1;
+            repeat (2) @(posedge clk);
         end
     endtask
 
     task pulse_start;
+        input [31:0] address;
+        input [31:0] length;
         begin
             @(negedge clk);
+            dst_addr  = address;
+            s2mm_len  = length;
             s2mm_ctrl = 32'd1;
-            @(posedge clk);
+            @(negedge clk);
             s2mm_ctrl = 32'd0;
         end
     endtask
 
-    task wait_done;
-        input integer limit;
-        integer i;
+    task pulse_write_done;
+        input response_error;
         begin
-            timed_out = 1'b1;
-            for (i = 0; i < limit; i = i + 1) begin
+            @(negedge clk);
+            write_error = response_error;
+            write_done  = 1'b1;
+            @(negedge clk);
+            write_done  = 1'b0;
+            write_error = 1'b0;
+        end
+    endtask
+
+    task wait_for_commands;
+        input integer expected;
+        begin
+            cycles = 0;
+            while (cmd_count < expected && cycles < 100) begin
                 @(posedge clk);
-                if (done_seen) begin
-                    timed_out = 1'b0;
-                    i = limit;
-                end
+                cycles = cycles + 1;
             end
         end
     endtask
 
-    // ---------------------------------------------------------
-    // Test sequence
-    // ---------------------------------------------------------
-    integer pass_count, fail_count;
+    task wait_for_done;
+        begin
+            cycles = 0;
+            while (!done_seen && cycles < 100) begin
+                @(posedge clk);
+                cycles = cycles + 1;
+            end
+        end
+    endtask
+
+    task report_case;
+        input condition;
+        input [8*40-1:0] name;
+        begin
+            if (condition) begin
+                $display("PASS: %0s", name);
+                pass_count = pass_count + 1;
+            end else begin
+                $display(
+                    "FAIL: %0s commands=%0d align=%0d status=%h",
+                    name, cmd_count, align_count, done_status
+                );
+                fail_count = fail_count + 1;
+            end
+        end
+    endtask
 
     initial begin
-        $dumpfile("wave.vcd");
-        $dumpvars(0, tb_s2mm_control_fsm);
-
         pass_count = 0;
         fail_count = 0;
 
-        // -----------------------------------------------------
-        // TC1: 32 bytes = 8 words, single burst
-        // -----------------------------------------------------
-        $display("\n=== TC1: 32 bytes, single burst ===");
         reset_dut();
-        load_fifo(8, 32'hA000_0000);
-        tb_bresp = 2'b00;
-
-        dst_addr = 32'hC000_0000;
-        s2mm_len = 32'd32;
-
-        pulse_start();
-        wait_done(500);
-
-        if (!timed_out &&
+        pulse_start(32'h8000_0000, 32'd16);
+        wait_for_commands(1);
+        pulse_write_done(1'b0);
+        wait_for_done();
+        report_case(
             done_seen &&
-            done_status[1] == 1'b1 &&
-            done_status[2] == 1'b0 &&
-            done_status[0] == 1'b0 &&
-            aw_seen == 1 &&
-            cap_awaddr[0] == 32'hC000_0000 &&
-            cap_awlen[0]  == 8'd7 &&
-            m_axi_awsize  == 3'b010 &&
-            m_axi_awburst == 2'b01) begin
-            $display("[PASS] TC1");
-            pass_count = pass_count + 1;
-        end else begin
-            $display("[FAIL] TC1: timed_out=%0d done_seen=%0d status=%h aw_seen=%0d awaddr0=%h awlen0=%0d",
-                     timed_out, done_seen, done_status, aw_seen, cap_awaddr[0], cap_awlen[0]);
-            fail_count = fail_count + 1;
-        end
+            done_status[2:0] == 3'b010 &&
+            cmd_count == 1 &&
+            captured_addr[0] == 32'h8000_0000 &&
+            captured_len[0] == 8'd3 &&
+            align_count == 1 &&
+            captured_offset == 2'd0 &&
+            captured_length == 32'd16,
+            "aligned single burst"
+        );
 
-        // -----------------------------------------------------
-        // TC2: 48 bytes = 12 words, multi-burst (8 + 4)
-        // -----------------------------------------------------
-        $display("\n=== TC2: 48 bytes, multi-burst ===");
         reset_dut();
-        load_fifo(12, 32'hB000_0000);
-        tb_bresp = 2'b00;
-
-        dst_addr = 32'hD000_0000;
-        s2mm_len = 32'd48;
-
-        pulse_start();
-        wait_done(800);
-
-        if (!timed_out &&
+        pulse_start(32'h9000_0003, 32'd35);
+        wait_for_commands(1);
+        pulse_write_done(1'b0);
+        wait_for_commands(2);
+        pulse_write_done(1'b0);
+        wait_for_done();
+        report_case(
             done_seen &&
-            done_status[1] == 1'b1 &&
-            done_status[2] == 1'b0 &&
-            done_status[0] == 1'b0 &&
-            aw_seen == 2 &&
-            cap_awaddr[0] == 32'hD000_0000 &&
-            cap_awlen[0]  == 8'd7 &&
-            cap_awaddr[1] == 32'hD000_0020 &&
-            cap_awlen[1]  == 8'd3) begin
-            $display("[PASS] TC2");
-            pass_count = pass_count + 1;
-        end else begin
-            $display("[FAIL] TC2: timed_out=%0d done_seen=%0d status=%h aw_seen=%0d",
-                     timed_out, done_seen, done_status, aw_seen);
-            $display("      burst0: addr=%h len=%0d", cap_awaddr[0], cap_awlen[0]);
-            $display("      burst1: addr=%h len=%0d", cap_awaddr[1], cap_awlen[1]);
-            fail_count = fail_count + 1;
-        end
+            done_status[2:0] == 3'b010 &&
+            cmd_count == 2 &&
+            captured_addr[0] == 32'h9000_0000 &&
+            captured_len[0] == 8'd7 &&
+            captured_addr[1] == 32'h9000_0020 &&
+            captured_len[1] == 8'd1 &&
+            captured_offset == 2'd3 &&
+            captured_length == 32'd35,
+            "unaligned multi-burst"
+        );
 
-        // -----------------------------------------------------
-        // TC3: SLVERR response -> error bit set
-        // -----------------------------------------------------
-        $display("\n=== TC3: error response ===");
         reset_dut();
-        load_fifo(4, 32'hC000_0000);
-        tb_bresp = 2'b10;
-
-        dst_addr = 32'hE000_0000;
-        s2mm_len = 32'd16;
-
-        pulse_start();
-        wait_done(500);
-
-        if (!timed_out &&
+        pulse_start(32'h0000_0FFB, 32'd20);
+        wait_for_commands(1);
+        pulse_write_done(1'b0);
+        wait_for_commands(2);
+        pulse_write_done(1'b0);
+        wait_for_done();
+        report_case(
             done_seen &&
-            done_status[1] == 1'b1 &&
-            done_status[2] == 1'b1 &&
-            done_status[0] == 1'b0 &&
-            aw_seen == 1 &&
-            cap_awaddr[0] == 32'hE000_0000 &&
-            cap_awlen[0]  == 8'd3) begin
-            $display("[PASS] TC3");
-            pass_count = pass_count + 1;
-        end else begin
-            $display("[FAIL] TC3: timed_out=%0d done_seen=%0d status=%h aw_seen=%0d awaddr0=%h awlen0=%0d",
-                     timed_out, done_seen, done_status, aw_seen, cap_awaddr[0], cap_awlen[0]);
-            fail_count = fail_count + 1;
-        end
+            done_status[2:0] == 3'b010 &&
+            cmd_count == 2 &&
+            captured_addr[0] == 32'h0000_0FF8 &&
+            captured_len[0] == 8'd1 &&
+            captured_addr[1] == 32'h0000_1000 &&
+            captured_len[1] == 8'd3,
+            "4KB boundary split"
+        );
 
-        $display("\n========================================");
-        $display("RESULTS: PASS=%0d  FAIL=%0d", pass_count, fail_count);
-        $display("========================================");
+        reset_dut();
+        pulse_start(32'hA000_0001, 32'd8);
+        wait_for_commands(1);
+        pulse_write_done(1'b1);
+        wait_for_done();
+        report_case(
+            done_seen &&
+            done_status[2:0] == 3'b110 &&
+            cmd_count == 1,
+            "write response error"
+        );
+
+        reset_dut();
+        pulse_start(32'hB000_0002, 32'd9);
+        wait_for_commands(1);
+        align_error = 1'b1;
+        pulse_write_done(1'b0);
+        wait_for_done();
+        report_case(
+            done_seen &&
+            done_status[2:0] == 3'b110 &&
+            cmd_count == 1,
+            "alignment error"
+        );
 
         if (fail_count == 0)
-            $display("ALL TESTS PASSED");
+            $display(
+                "PASS: tb_s2mm_control_fsm (%0d cases)",
+                pass_count
+            );
         else
-            $display("CHECK THE WAVEFORM / LOG ABOVE");
+            $display(
+                "FAIL: tb_s2mm_control_fsm errors=%0d",
+                fail_count
+            );
+        $finish;
+    end
 
-        #20;
+    initial begin
+        #50000;
+        $display("FAIL: tb_s2mm_control_fsm watchdog timeout");
         $finish;
     end
 

@@ -1,9 +1,8 @@
 `timescale 1ns/1ps
 
-module dma_controller_s2mm #(
+module dma_controller_dual #(
     parameter DATA_WIDTH = 32,
     parameter ADDR_WIDTH = 32,
-    parameter FIFO_DEPTH = 16,
     parameter BURST_MAX  = 16
 )(
     input  wire                  clk,
@@ -32,6 +31,12 @@ module dma_controller_s2mm #(
     input  wire                  s_axis_tlast,
     output wire                  s_axis_tready,
 
+    output wire [DATA_WIDTH-1:0] m_axis_tdata,
+    output wire [3:0]            m_axis_tkeep,
+    output wire                  m_axis_tvalid,
+    input  wire                  m_axis_tready,
+    output wire                  m_axis_tlast,
+
     output wire [ADDR_WIDTH-1:0] m_axi_awaddr,
     output wire [7:0]            m_axi_awlen,
     output wire [2:0]            m_axi_awsize,
@@ -47,16 +52,39 @@ module dma_controller_s2mm #(
     input  wire                  m_axi_bvalid,
     output wire                  m_axi_bready,
 
+    output wire [ADDR_WIDTH-1:0] m_axi_araddr,
+    output wire [7:0]            m_axi_arlen,
+    output wire [2:0]            m_axi_arsize,
+    output wire [1:0]            m_axi_arburst,
+    output wire                  m_axi_arvalid,
+    input  wire                  m_axi_arready,
+    input  wire [DATA_WIDTH-1:0] m_axi_rdata,
+    input  wire [1:0]            m_axi_rresp,
+    input  wire                  m_axi_rlast,
+    input  wire                  m_axi_rvalid,
+    output wire                  m_axi_rready,
+
+    output wire [31:0]           mm2s_status,
     output wire [31:0]           s2mm_status,
+    output wire                  mm2s_done,
     output wire                  s2mm_done
 );
 
-    wire [31:0] unused_mm2s_src;
-    wire [31:0] unused_mm2s_len;
-    wire [31:0] unused_mm2s_ctrl;
+    wire [31:0] mm2s_src_addr;
+    wire [31:0] mm2s_length;
+    wire [31:0] mm2s_control;
     wire [31:0] s2mm_dst_addr;
     wire [31:0] s2mm_length;
     wire [31:0] s2mm_control;
+    wire mm2s_grant;
+    wire s2mm_grant;
+
+    wire [31:0] mm2s_channel_control = {
+        mm2s_control[31:2], mm2s_control[1], mm2s_grant
+    };
+    wire [31:0] s2mm_channel_control = {
+        s2mm_control[31:2], s2mm_control[1], s2mm_grant
+    };
 
     axi4_lite_slave u_registers (
         .clk(clk),
@@ -78,20 +106,62 @@ module dma_controller_s2mm #(
         .s_axi_rresp(s_axi_rresp),
         .s_axi_rvalid(s_axi_rvalid),
         .s_axi_rready(s_axi_rready),
-        .mm2s_src_addr(unused_mm2s_src),
-        .mm2s_length(unused_mm2s_len),
-        .mm2s_control(unused_mm2s_ctrl),
+        .mm2s_src_addr(mm2s_src_addr),
+        .mm2s_length(mm2s_length),
+        .mm2s_control(mm2s_control),
         .s2mm_dst_addr(s2mm_dst_addr),
         .s2mm_length(s2mm_length),
         .s2mm_control(s2mm_control),
-        .mm2s_status(32'd0),
+        .mm2s_status(mm2s_status),
         .s2mm_status(s2mm_status)
+    );
+
+    arbitration_unit #(
+        .ALLOW_SIMULTANEOUS(1)
+    ) u_start_policy (
+        .clk(clk),
+        .rst_n(rst_n),
+        .mm2s_request(mm2s_control[0]),
+        .s2mm_request(s2mm_control[0]),
+        .mm2s_busy(mm2s_status[0]),
+        .s2mm_busy(s2mm_status[0]),
+        .mm2s_grant(mm2s_grant),
+        .s2mm_grant(s2mm_grant)
+    );
+
+    mm2s_channel #(
+        .DATA_WIDTH(DATA_WIDTH),
+        .ADDR_WIDTH(ADDR_WIDTH),
+        .BURST_MAX(BURST_MAX)
+    ) u_mm2s (
+        .clk(clk),
+        .rst_n(rst_n),
+        .m_axis_tdata(m_axis_tdata),
+        .m_axis_tkeep(m_axis_tkeep),
+        .m_axis_tvalid(m_axis_tvalid),
+        .m_axis_tready(m_axis_tready),
+        .m_axis_tlast(m_axis_tlast),
+        .m_axi_araddr(m_axi_araddr),
+        .m_axi_arlen(m_axi_arlen),
+        .m_axi_arsize(m_axi_arsize),
+        .m_axi_arburst(m_axi_arburst),
+        .m_axi_arvalid(m_axi_arvalid),
+        .m_axi_arready(m_axi_arready),
+        .m_axi_rdata(m_axi_rdata),
+        .m_axi_rresp(m_axi_rresp),
+        .m_axi_rlast(m_axi_rlast),
+        .m_axi_rvalid(m_axi_rvalid),
+        .m_axi_rready(m_axi_rready),
+        .mm2s_ctrl(mm2s_channel_control),
+        .src_addr(mm2s_src_addr[ADDR_WIDTH-1:0]),
+        .mm2s_len(mm2s_length),
+        .mm2s_status(mm2s_status),
+        .mm2s_done(mm2s_done)
     );
 
     s2mm_channel #(
         .DATA_WIDTH(DATA_WIDTH),
         .ADDR_WIDTH(ADDR_WIDTH),
-        .FIFO_DEPTH(FIFO_DEPTH),
         .BURST_MAX(BURST_MAX)
     ) u_s2mm (
         .clk(clk),
@@ -114,7 +184,7 @@ module dma_controller_s2mm #(
         .m_axi_wstrb(m_axi_wstrb),
         .m_axi_wlast(m_axi_wlast),
         .m_axi_bready(m_axi_bready),
-        .s2mm_ctrl(s2mm_control),
+        .s2mm_ctrl(s2mm_channel_control),
         .dst_addr(s2mm_dst_addr[ADDR_WIDTH-1:0]),
         .s2mm_len(s2mm_length),
         .s2mm_status(s2mm_status),
