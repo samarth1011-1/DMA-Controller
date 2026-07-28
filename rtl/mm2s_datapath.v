@@ -110,12 +110,12 @@ module mm2s_datapath #(
                     if (raw_beats_remaining == 1)
                         flush_pending <= 1'b1;
                 end else if (flush_pending && output_handshake) begin
-                    bytes_remaining <= bytes_remaining - output_bytes;
+                    bytes_remaining <= bytes_remaining - {29'd0, output_bytes};
                     flush_pending   <= 1'b0;
                     active          <= 1'b0;
                     done            <= 1'b1;
                 end else if (output_handshake) begin
-                    bytes_remaining <= bytes_remaining - output_bytes;
+                    bytes_remaining <= bytes_remaining - {29'd0, output_bytes};
 
                     if (raw_handshake) begin
                         previous_data       <= data;

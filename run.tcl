@@ -4,7 +4,8 @@ if {$tcl_platform(platform) eq "windows"} {
     set root_dir [pwd]
 }
 
-set build_dir [file join $::env(TEMP) dma_controller_regression]
+set temp_dir [expr {[info exists ::env(TEMP)] ? $::env(TEMP) : ([info exists ::env(TMPDIR)] ? $::env(TMPDIR) : "/tmp")}]
+set build_dir [file join $temp_dir dma_controller_regression]
 file mkdir $build_dir
 
 # idk if this will store the files in the correct place

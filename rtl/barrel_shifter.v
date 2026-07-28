@@ -9,7 +9,9 @@ module barrel_shifter #(
     output wire [DATA_WIDTH-1:0] out_shifted_address
 );
 
+    /* verilator lint_off UNOPTFLAT */
     wire [DATA_WIDTH-1:0] stage [0:SHIFT_BITS];
+    /* verilator lint_on UNOPTFLAT */
     assign stage[0] = data_address;
 
     genvar i;

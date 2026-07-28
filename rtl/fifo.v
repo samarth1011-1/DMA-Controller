@@ -13,6 +13,7 @@ module fifo #(
     output [$clog2(DEPTH+1)-1:0]  count
 );
     localparam PTR_W = $clog2(DEPTH);
+    localparam CNT_W = $clog2(DEPTH+1);
 
     reg [DATA_WIDTH-1:0] mem [0:DEPTH-1];
     reg [PTR_W-1:0] wr_ptr, rd_ptr;
@@ -40,8 +41,8 @@ module fifo #(
                 2'b01: cnt <= cnt-1;
                 default: cnt <= cnt;
             endcase
-            full <= (cnt + do_write - do_read) == DEPTH;
-            empty <= (cnt + do_write - do_read) == 0;
+            full <= (cnt + {{(CNT_W-1){1'b0}}, do_write} - {{(CNT_W-1){1'b0}}, do_read}) == DEPTH[CNT_W-1:0];
+            empty <= (cnt + {{(CNT_W-1){1'b0}}, do_write} - {{(CNT_W-1){1'b0}}, do_read}) == {CNT_W{1'b0}};
         end
     end
     assign count = cnt;
