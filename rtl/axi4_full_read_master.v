@@ -41,7 +41,8 @@ module axi4_full_read_master #(
         READ_DATA = 2'd2;
 
     localparam integer BYTE_WIDTH = DATA_WIDTH / 8;
-    localparam [2:0] AXI_SIZE = $clog2(BYTE_WIDTH);
+    localparam integer AXI_SIZE_INT = $clog2(BYTE_WIDTH);
+    localparam [2:0] AXI_SIZE = AXI_SIZE_INT[2:0];
 
     reg [1:0] state;
     reg [ADDR_WIDTH-1:0] addr_reg;

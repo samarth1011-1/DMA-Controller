@@ -2,3 +2,17 @@
 *.out
 *.vcd
 /output
+vivado*.log
+vivado*.jou
+vivado*.str
+*.backup.log
+*.backup.jou
+.Xil/
+hd_visual/
+vivado_project/
+vivado_blackboard_hw/
+*.bin
+*.bit
+*.dcp
+*.sysdef
+*.hwdef

@@ -54,7 +54,7 @@ module s2mm_datapath #(
     endfunction
 
     wire [5:0] shift_amount =
-        (offset_reg == 0) ? 6'd0 : ((6'd4 - offset_reg) << 3);
+        (offset_reg == 0) ? 6'd0 : ((6'd4 - {4'd0, offset_reg}) << 3);
     wire [63:0] shift_input =
         flush_pending
             ? {32'd0, previous_data}
@@ -109,7 +109,7 @@ module s2mm_datapath #(
                 active                <= (transfer_len != 0);
                 error                 <= 1'b0;
             end else if (output_handshake) begin
-                bytes_remaining <= bytes_remaining - valid_bytes;
+                bytes_remaining <= bytes_remaining - {29'd0, valid_bytes};
 
                 if (flush_pending) begin
                     flush_pending <= 1'b0;

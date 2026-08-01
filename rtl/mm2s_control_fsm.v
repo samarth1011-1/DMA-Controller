@@ -47,7 +47,7 @@ module mm2s_control_fsm #(
 
     always @* begin
         boundary_bytes = 13'd4096 - {1'b0, current_addr[11:0]};
-        boundary_beats = boundary_bytes >> 2;
+        boundary_beats = boundary_bytes[12:2];
 
         if (beats_remaining < BURST_MAX)
             planned_burst = beats_remaining[8:0];
@@ -56,7 +56,7 @@ module mm2s_control_fsm #(
         else
             planned_burst = BURST_MAX;
 
-        if (planned_burst > boundary_beats)
+        if ({2'b00, planned_burst} > boundary_beats)
             planned_burst = boundary_beats[8:0];
         if (planned_burst == 0)
             planned_burst = 9'd1;
@@ -119,8 +119,8 @@ module mm2s_control_fsm #(
                         end else if (beats_remaining <= current_burst) begin
                             state <= WAIT_ALIGN;
                         end else begin
-                            beats_remaining <= beats_remaining - current_burst;
-                            current_addr <= current_addr + (current_burst << 2);
+                            beats_remaining <= beats_remaining - {23'd0, current_burst};
+                            current_addr <= current_addr + {21'd0, current_burst, 2'b00};
                             state <= ISSUE_CMD;
                         end
                     end
